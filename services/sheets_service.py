@@ -60,12 +60,16 @@ def _update_summary(spreadsheet):
     for row in rows[1:]:  # skip header
         if not row or not row[0]:
             continue
-        date_str = row[0]       # Column A: Date
-        total_str = row[2]      # Column C: Total
+        date_str = row[0].strip()       # Column A: Date
+        total_str = row[2]              # Column C: Total
         category = row[3].strip() if len(row) > 3 else ""  # Column D: Category
 
+        # Fall back to Logged At (Column F) if receipt date is missing
+        if not date_str and len(row) > 5 and row[5]:
+            date_str = row[5].split(" ")[0]
+
         try:
-            date = datetime.strptime(date_str.strip(), "%d/%m/%Y")
+            date = datetime.strptime(date_str, "%d/%m/%Y")
         except ValueError:
             continue
 
