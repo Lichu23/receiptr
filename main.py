@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import traceback
-from fastapi import FastAPI, Form, Response
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Form, Header, HTTPException, Response
 from services.groq_service import parse_receipt
-from services.sheets_service import append_row
+from services.sheets_service import append_row, get_budget_eur, get_previous_month_summary, MONTHS_ES
+from services.exchange_service import get_eur_to_ars
 from services.twilio_service import send_message, send_typing_indicator
+import config
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -55,17 +58,28 @@ def fmt_ars(value) -> str:
 def build_summary(data: dict) -> str:
     total = data.get("total")
     total_display = fmt_ars(total) if total else "?"
-    return (
-        "Esto es lo que encontré:\n"
-        f"  Comercio: {data.get('store') or '?'}\n"
-        f"  Fecha: {data.get('date') or '?'}\n"
-        f"  Total: {total_display}\n"
-        f"  Categoría: {data.get('category') or '?'}\n"
-        f"  Items: {data.get('items') or '?'}\n\n"
-        "Respondé *SI* para guardar, *NO* para cancelar, o corregí un dato:\n"
-        "  corregir total 52.10\n"
-        "  corregir comercio Lidl"
-    )
+    store = data.get("store") or "?"
+    date = data.get("date") or "?"
+    items = data.get("items")
+
+    lines = [f"*{store} – {date}*"]
+
+    if isinstance(items, list) and items:
+        for it in items:
+            name = it.get("name") or "?"
+            price = it.get("price")
+            price_str = fmt_ars(price) if price is not None else "—"
+            lines.append(f"  • {name}: {price_str}")
+    elif items:
+        lines.append(f"  Items: {items}")
+
+    lines.append(f"  Categoría: {data.get('category') or '?'}")
+    lines.append(f"*Total: {total_display}*")
+    lines.append("")
+    lines.append("Guardamos? Respondé *SI* para guardar, *NO* para cancelar, o corregí un dato:")
+    lines.append("  corregir total 52.10")
+    lines.append("  corregir comercio Lidl")
+    return "\n".join(lines)
 
 
 def process_single_image(sender: str, url: str) -> str:
@@ -171,7 +185,13 @@ async def webhook(
     if sender in pending:
         if upper in ("SI", "YES", "SÍ"):
             try:
-                months = append_row(pending[sender])
+                budget_eur = get_budget_eur()
+                try:
+                    eur_to_ars = await get_eur_to_ars()
+                except Exception:
+                    logging.warning("Could not fetch EUR/ARS rate, using 0")
+                    eur_to_ars = 0.0
+                months = append_row(pending[sender], budget_eur=budget_eur, eur_to_ars=eur_to_ars)
                 lines = ["Listo, guardado en la planilla!\n", "*Resumen:*"]
                 for m in months:
                     stores = ", ".join(m["stores"]) or "?"
@@ -236,8 +256,8 @@ async def webhook(
         else:
             data = {
                 "total": parts[1],
-                "category": parts[2],
-                "store": parts[3],
+                "category": parts[2].capitalize(),
+                "store": parts[3].title(),
                 "date": parts[4],
                 "items": parts[5],
             }
@@ -252,3 +272,78 @@ async def webhook(
 
     send_message(to=sender, body=reply)
     return Response(content="", media_type="text/plain")
+
+
+@app.post("/cron/monthly-summary")
+async def cron_monthly_summary(x_cron_secret: str = Header(None)):
+    if not config.CRON_SECRET or x_cron_secret != config.CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Calculate previous month (this endpoint is called on the 1st)
+    today = datetime.now()
+    first_of_this_month = today.replace(day=1)
+    last_month = first_of_this_month - timedelta(days=1)
+    prev_year = last_month.year
+    prev_month = last_month.month
+
+    row = get_previous_month_summary(prev_year, prev_month)
+    if row is None:
+        logging.warning(f"No summary data found for {prev_year}/{prev_month}")
+        return {"ok": True, "warning": "No data for previous month"}
+
+    budget_eur = get_budget_eur()
+    try:
+        eur_to_ars = await get_eur_to_ars()
+    except Exception:
+        logging.warning("Could not fetch EUR/ARS rate for cron summary")
+        eur_to_ars = 0.0
+
+    budget_ars = budget_eur * eur_to_ars if eur_to_ars else 0.0
+
+    month_name = MONTHS_ES.get(prev_month, str(prev_month))
+
+    total_str = row.get("Total ($)") or "0"
+    try:
+        total_val = float(str(total_str).replace(",", ".").replace("$", "").strip())
+    except ValueError:
+        total_val = 0.0
+
+    count = row.get("Nro. Tickets") or "?"
+    pct = round(total_val / budget_ars * 100) if budget_ars else 0
+    pct_label = f"{pct}% {'✓' if pct <= 100 else '⚠'}"
+
+    # Build category breakdown (all columns that aren't the fixed ones)
+    fixed_cols = {"Año", "Mes", "Nro. Tickets", "Total ($)", "Presupuesto (EUR)",
+                  "Tipo de cambio", "Presupuesto (ARS)", "% Gastado", "Estado"}
+    cat_lines = []
+    for key, val in row.items():
+        if key not in fixed_cols and val and str(val) != "0":
+            try:
+                cat_lines.append(f"  {key}: {fmt_ars(val)}")
+            except Exception:
+                pass
+
+    msg_lines = [
+        f"*Resumen de {month_name} {prev_year}*",
+        "",
+        f"Tickets: {count}",
+        f"Total gastado: {fmt_ars(total_val)}",
+        "",
+        f"Presupuesto: {budget_eur:.0f} EUR",
+        f"Tipo de cambio: 1 EUR = {fmt_ars(eur_to_ars)}",
+        f"Presupuesto en ARS: {fmt_ars(budget_ars)}",
+        f"Gastado: {pct_label} del presupuesto",
+    ]
+    if cat_lines:
+        msg_lines += ["", "*Por categoría:*"] + cat_lines
+
+    message = "\n".join(msg_lines)
+
+    if config.NOTIFY_PHONE:
+        to = f"whatsapp:{config.NOTIFY_PHONE}" if not config.NOTIFY_PHONE.startswith("whatsapp:") else config.NOTIFY_PHONE
+        send_message(to=to, body=message)
+        logging.info(f"Monthly summary sent to {to}")
+    else:
+        logging.warning("NOTIFY_PHONE not set, skipping WhatsApp send")
+
+    return {"ok": True}

@@ -1,6 +1,5 @@
 import json
 import logging
-from collections import defaultdict
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
@@ -45,11 +44,50 @@ def _get_or_create_summary_sheet(spreadsheet):
     try:
         return spreadsheet.worksheet("Resumen")
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="Resumen", rows=100, cols=5)
+        sheet = spreadsheet.add_worksheet(title="Resumen", rows=100, cols=20)
         return sheet
 
 
-def _update_summary(spreadsheet):
+def _get_or_create_productos_sheet(spreadsheet):
+    try:
+        return spreadsheet.worksheet("Productos")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title="Productos", rows=1000, cols=6)
+        sheet.append_row(["Logged At", "Fecha", "Comercio", "Categoría", "Producto", "Precio"])
+        logger.info("Created 'Productos' sheet")
+        return sheet
+
+
+def get_budget_eur() -> float:
+    """Read monthly budget in EUR from cell B1 of the 'Config' sheet."""
+    spreadsheet = _get_spreadsheet()
+    try:
+        config_sheet = spreadsheet.worksheet("Config")
+        value = config_sheet.acell("B1").value
+        return float(str(value).replace(",", ".").strip())
+    except gspread.exceptions.WorksheetNotFound:
+        logger.warning("'Config' sheet not found, defaulting budget to 0")
+        return 0.0
+    except (ValueError, TypeError):
+        logger.warning("Could not parse budget from Config!B1, defaulting to 0")
+        return 0.0
+
+
+def append_productos(logged_at: str, date: str, store: str, category: str, items: list[dict]):
+    """Append one row per item to the 'Productos' sheet."""
+    if not items:
+        return
+    spreadsheet = _get_spreadsheet()
+    sheet = _get_or_create_productos_sheet(spreadsheet)
+    rows = [
+        [logged_at, date, store, category, item.get("name") or "", item.get("price") or ""]
+        for item in items
+    ]
+    sheet.append_rows(rows, value_input_option="USER_ENTERED")
+    logger.info(f"Appended {len(rows)} producto row(s)")
+
+
+def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.0):
     data_sheet = spreadsheet.sheet1
     rows = data_sheet.get_all_values()
 
@@ -98,18 +136,31 @@ def _update_summary(spreadsheet):
                 all_categories.append(category)
 
     all_categories.sort()
-    headers = ["Año", "Mes", "Nro. Tickets"] + all_categories + ["Total ($)"]
+    budget_ars = round(budget_eur * eur_to_ars, 2) if eur_to_ars else 0.0
+    headers = (
+        ["Año", "Mes", "Nro. Tickets"]
+        + all_categories
+        + ["Total ($)", "Presupuesto (EUR)", "Tipo de cambio", "Presupuesto (ARS)", "% Gastado", "Estado"]
+    )
     summary_rows = [headers]
 
     for (year, month) in sorted(monthly.keys()):
         entry = monthly[(year, month)]
         cat_values = [round(entry["categories"].get(cat, 0.0), 2) for cat in all_categories]
+        total_month = round(entry["total"], 2)
+        pct = round(total_month / budget_ars * 100) if budget_ars else 0
+        estado = "✓ Dentro" if pct <= 100 else "⚠ Excedido"
         summary_rows.append([
             year,
             MONTHS_ES[month],
             entry["count"],
             *cat_values,
-            round(entry["total"], 2),
+            total_month,
+            budget_eur,
+            round(eur_to_ars, 2) if eur_to_ars else "",
+            budget_ars,
+            f"{pct}%",
+            estado,
         ])
 
     summary_sheet = _get_or_create_summary_sheet(spreadsheet)
@@ -126,28 +177,69 @@ def _update_summary(spreadsheet):
             "count": monthly[k]["count"],
             "total": round(monthly[k]["total"], 2),
             "stores": monthly[k]["stores"],
+            "categories": monthly[k]["categories"],
         }
         for k in last_keys
     ]
     return last_months
 
 
-def append_row(data: dict) -> None:
+def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0) -> list:
     logger.info(f"Connecting to Google Sheet: {GOOGLE_SHEET_ID}")
     spreadsheet = _get_spreadsheet()
     sheet = spreadsheet.sheet1
 
     logged_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    items = data.get("items") or []
+    # Store a readable summary of items in Tickets sheet (column E)
+    if isinstance(items, list):
+        items_summary = ", ".join(it.get("name") or "" for it in items if it.get("name"))
+    else:
+        items_summary = str(items)
+
     row = [
         data.get("date") or "",
         data.get("store") or "",
         data.get("total") or "",
         data.get("category") or "",
-        data.get("items") or "",
+        items_summary,
         logged_at,
     ]
     logger.info(f"Appending row: {row}")
     sheet.append_row(row, value_input_option="USER_ENTERED")
     logger.info("Row appended successfully")
 
-    return _update_summary(spreadsheet)
+    # Append individual items to Productos sheet
+    if isinstance(items, list) and items:
+        _get_or_create_productos_sheet(spreadsheet)  # ensure sheet + header exist
+        productos_sheet = spreadsheet.worksheet("Productos")
+        rows = [
+            [
+                logged_at,
+                data.get("date") or "",
+                data.get("store") or "",
+                data.get("category") or "",
+                item.get("name") or "",
+                item.get("price") if item.get("price") is not None else "",
+            ]
+            for item in items
+        ]
+        productos_sheet.append_rows(rows, value_input_option="USER_ENTERED")
+        logger.info(f"Appended {len(rows)} producto row(s)")
+
+    return _update_summary(spreadsheet, budget_eur=budget_eur, eur_to_ars=eur_to_ars)
+
+
+def get_previous_month_summary(year: int, month: int) -> dict | None:
+    """Return the Resumen row for a given year/month, or None if not found."""
+    spreadsheet = _get_spreadsheet()
+    summary_sheet = _get_or_create_summary_sheet(spreadsheet)
+    rows = summary_sheet.get_all_values()
+    if not rows:
+        return None
+    headers = rows[0]
+    month_name = MONTHS_ES.get(month, "")
+    for row in rows[1:]:
+        if len(row) >= 2 and str(row[0]) == str(year) and row[1] == month_name:
+            return dict(zip(headers, row))
+    return None

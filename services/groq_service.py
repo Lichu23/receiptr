@@ -15,9 +15,11 @@ Devolvé SOLO el JSON, sin texto adicional, con estas claves exactas:
   "date": "fecha de la compra en formato DD/MM/YYYY",
   "total": "monto total como número con dos decimales (ej: 47.30)",
   "category": "categoría del gasto (ej: Supermercado, Farmacia, Restaurante, Combustible, Otro)",
-  "items": "lista resumida de productos separados por coma"
+  "items": [{"name": "nombre del producto", "price": 123.45}, ...]
 }
-Si no podés determinar algún campo, usá null."""
+El campo "items" debe ser una lista de objetos con "name" (string) y "price" (número con dos decimales).
+Si un producto no tiene precio visible, usá null para "price".
+Si no podés determinar algún campo raíz, usá null."""
 
 
 def parse_receipt(image_urls: list[str]) -> dict | None:
@@ -51,12 +53,25 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
                 raw = raw[4:]
         data = json.loads(raw)
         logger.info(f"Parsed data: {data}")
+
+        # Normalise items: always return a list of {name, price} dicts
+        raw_items = data.get("items")
+        if isinstance(raw_items, list):
+            items = [
+                {"name": str(it.get("name") or ""), "price": it.get("price")}
+                for it in raw_items
+                if isinstance(it, dict)
+            ]
+        else:
+            # Fallback: Groq returned a string — wrap as single item with no price
+            items = [{"name": str(raw_items), "price": None}] if raw_items else []
+
         return {
             "store": data.get("store"),
             "date": data.get("date"),
             "total": data.get("total"),
             "category": data.get("category"),
-            "items": data.get("items"),
+            "items": items,
         }
     except Exception as e:
         logger.error(f"parse_receipt failed: {type(e).__name__}: {e}")
