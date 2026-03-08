@@ -20,33 +20,24 @@ Devolvé SOLO el JSON, sin texto adicional, con estas claves exactas:
 Si no podés determinar algún campo, usá null."""
 
 
-def parse_receipt(image_url: str) -> dict | None:
+def parse_receipt(image_urls: list[str]) -> dict | None:
     try:
-        logger.info(f"Downloading image from: {image_url}")
-        response = httpx.get(image_url, timeout=15, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), follow_redirects=True)
-        logger.info(f"Image download status: {response.status_code}, size: {len(response.content)} bytes")
-        response.raise_for_status()
-        image_b64 = base64.standard_b64encode(response.content).decode("utf-8")
-        content_type = response.headers.get("content-type", "image/jpeg").split(";")[0]
-        logger.info(f"Image content-type: {content_type}")
+        content = []
+        for url in image_urls:
+            logger.info(f"Downloading image from: {url}")
+            response = httpx.get(url, timeout=15, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), follow_redirects=True)
+            logger.info(f"Image download status: {response.status_code}, size: {len(response.content)} bytes")
+            response.raise_for_status()
+            image_b64 = base64.standard_b64encode(response.content).decode("utf-8")
+            content_type = response.headers.get("content-type", "image/jpeg").split(";")[0]
+            logger.info(f"Image content-type: {content_type}")
+            content.append({"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{image_b64}"}})
+        content.append({"type": "text", "text": PROMPT})
 
-        logger.info("Sending image to Groq...")
+        logger.info(f"Sending {len(image_urls)} image(s) to Groq...")
         completion = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{content_type};base64,{image_b64}"
-                            },
-                        },
-                        {"type": "text", "text": PROMPT},
-                    ],
-                }
-            ],
+            messages=[{"role": "user", "content": content}],
             max_tokens=512,
         )
 
