@@ -106,9 +106,15 @@ def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.
         if not date_str and len(row) > 5 and row[5]:
             date_str = row[5].split(" ")[0]
 
-        try:
-            date = datetime.strptime(date_str, "%d/%m/%Y")
-        except ValueError:
+        date = None
+        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                date = datetime.strptime(date_str, fmt)
+                break
+            except ValueError:
+                continue
+        if date is None:
+            logger.warning(f"Could not parse date '{date_str}', skipping row")
             continue
 
         try:

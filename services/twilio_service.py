@@ -7,12 +7,15 @@ logger = logging.getLogger(__name__)
 
 
 def send_message(to: str, body: str) -> None:
+    logger.info(f"Sending message to={to} from={TWILIO_WHATSAPP_NUMBER}")
+    logger.info(f"Message body: {body}")
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    client.messages.create(
+    msg = client.messages.create(
         from_=TWILIO_WHATSAPP_NUMBER,
         to=to,
         body=body,
     )
+    logger.info(f"Twilio message created: sid={msg.sid} status={msg.status} error_code={msg.error_code} error_message={msg.error_message}")
 
 
 def send_typing_indicator(message_sid: str) -> None:
