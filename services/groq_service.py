@@ -40,7 +40,7 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
         completion = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "user", "content": content}],
-            max_tokens=512,
+            max_tokens=4096,
         )
 
         raw = completion.choices[0].message.content.strip()
