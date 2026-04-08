@@ -40,12 +40,27 @@ def _get_spreadsheet():
     return spreadsheet
 
 
-def _get_or_create_summary_sheet(spreadsheet):
+def _get_or_create_summary_sheet(spreadsheet, name="Resumen"):
     try:
-        return spreadsheet.worksheet("Resumen")
+        return spreadsheet.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="Resumen", rows=100, cols=20)
+        sheet = spreadsheet.add_worksheet(title=name, rows=100, cols=20)
         return sheet
+
+
+def _get_or_create_tickets_sheet(spreadsheet, name="Tickets"):
+    try:
+        sheet = spreadsheet.worksheet(name)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=10)
+
+    # Ensure header row exists
+    first_row = sheet.row_values(1)
+    if not first_row:
+        sheet.append_row(["Date", "Store", "Total", "Category", "Items", "Logged At"])
+        logger.info(f"Added header row to '{name}' sheet")
+
+    return sheet
 
 
 def _get_or_create_productos_sheet(spreadsheet):
@@ -87,8 +102,8 @@ def append_productos(logged_at: str, date: str, store: str, category: str, items
     logger.info(f"Appended {len(rows)} producto row(s)")
 
 
-def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.0):
-    data_sheet = spreadsheet.sheet1
+def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tickets_tab: str = "Tickets", summary_tab: str = "Resumen", with_budget: bool = True):
+    data_sheet = _get_or_create_tickets_sheet(spreadsheet, name=tickets_tab)
     rows = data_sheet.get_all_values()
 
     # monthly[key] = {"total": float, "count": int, "categories": {cat: float}}
@@ -107,7 +122,7 @@ def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.
             date_str = row[5].split(" ")[0]
 
         date = None
-        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"):
+        for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%y", "%m/%d/%y"):
             try:
                 date = datetime.strptime(date_str, fmt)
                 break
@@ -143,33 +158,47 @@ def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.
 
     all_categories.sort()
     budget_ars = round(budget_eur * eur_to_ars, 2) if eur_to_ars else 0.0
-    headers = (
-        ["Año", "Mes", "Nro. Tickets"]
-        + all_categories
-        + ["Total ($)", "Presupuesto (EUR)", "Tipo de cambio", "Presupuesto (ARS)", "% Gastado", "Estado"]
-    )
+
+    if with_budget:
+        headers = (
+            ["Año", "Mes", "Nro. Tickets"]
+            + all_categories
+            + ["Total ($)", "Presupuesto (EUR)", "Tipo de cambio", "Presupuesto (ARS)", "% Gastado", "Estado"]
+        )
+    else:
+        headers = ["Año", "Mes", "Nro. Tickets"] + all_categories + ["Total ($)"]
+
     summary_rows = [headers]
 
     for (year, month) in sorted(monthly.keys()):
         entry = monthly[(year, month)]
         cat_values = [round(entry["categories"].get(cat, 0.0), 2) for cat in all_categories]
         total_month = round(entry["total"], 2)
-        pct = round(total_month / budget_ars * 100) if budget_ars else 0
-        estado = "✓ Dentro" if pct <= 100 else "⚠ Excedido"
-        summary_rows.append([
-            year,
-            MONTHS_ES[month],
-            entry["count"],
-            *cat_values,
-            total_month,
-            budget_eur,
-            round(eur_to_ars, 2) if eur_to_ars else "",
-            budget_ars,
-            f"{pct}%",
-            estado,
-        ])
+        if with_budget:
+            pct = round(total_month / budget_ars * 100) if budget_ars else 0
+            estado = "✓ Dentro" if pct <= 100 else "⚠ Excedido"
+            summary_rows.append([
+                year,
+                MONTHS_ES[month],
+                entry["count"],
+                *cat_values,
+                total_month,
+                budget_eur,
+                round(eur_to_ars, 2) if eur_to_ars else "",
+                budget_ars,
+                f"{pct}%",
+                estado,
+            ])
+        else:
+            summary_rows.append([
+                year,
+                MONTHS_ES[month],
+                entry["count"],
+                *cat_values,
+                total_month,
+            ])
 
-    summary_sheet = _get_or_create_summary_sheet(spreadsheet)
+    summary_sheet = _get_or_create_summary_sheet(spreadsheet, name=summary_tab)
     summary_sheet.clear()
     summary_sheet.update(summary_rows, "A1")
     logger.info(f"Summary sheet updated with {len(summary_rows) - 1} month(s)")
@@ -190,10 +219,10 @@ def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.
     return last_months
 
 
-def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0) -> list:
+def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tickets_tab: str = "Tickets", summary_tab: str = "Resumen", with_productos: bool = True, with_budget: bool = True) -> list:
     logger.info(f"Connecting to Google Sheet: {GOOGLE_SHEET_ID}")
     spreadsheet = _get_spreadsheet()
-    sheet = spreadsheet.sheet1
+    sheet = _get_or_create_tickets_sheet(spreadsheet, name=tickets_tab)
 
     logged_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     items = data.get("items") or []
@@ -215,8 +244,8 @@ def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0) -> 
     sheet.append_row(row, value_input_option="USER_ENTERED")
     logger.info("Row appended successfully")
 
-    # Append individual items to Productos sheet
-    if isinstance(items, list) and items:
+    # Append individual items to Productos sheet (only for users with productos enabled)
+    if with_productos and isinstance(items, list) and items:
         _get_or_create_productos_sheet(spreadsheet)  # ensure sheet + header exist
         productos_sheet = spreadsheet.worksheet("Productos")
         rows = [
@@ -233,13 +262,13 @@ def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0) -> 
         productos_sheet.append_rows(rows, value_input_option="USER_ENTERED")
         logger.info(f"Appended {len(rows)} producto row(s)")
 
-    return _update_summary(spreadsheet, budget_eur=budget_eur, eur_to_ars=eur_to_ars)
+    return _update_summary(spreadsheet, budget_eur=budget_eur, eur_to_ars=eur_to_ars, tickets_tab=tickets_tab, summary_tab=summary_tab, with_budget=with_budget)
 
 
-def get_previous_month_summary(year: int, month: int) -> dict | None:
-    """Return the Resumen row for a given year/month, or None if not found."""
+def get_previous_month_summary(year: int, month: int, summary_tab: str = "Resumen") -> dict | None:
+    """Return the summary row for a given year/month, or None if not found."""
     spreadsheet = _get_spreadsheet()
-    summary_sheet = _get_or_create_summary_sheet(spreadsheet)
+    summary_sheet = _get_or_create_summary_sheet(spreadsheet, name=summary_tab)
     rows = summary_sheet.get_all_values()
     if not rows:
         return None

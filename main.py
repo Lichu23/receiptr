@@ -27,6 +27,25 @@ image_buffer: dict[str, dict] = {}
 
 BUFFER_WAIT = 4  # seconds
 
+
+def get_user_config(sender: str) -> dict:
+    """Return sheet tab config for the given sender phone number."""
+    if config.USER2_PHONE and sender.endswith(config.USER2_PHONE):
+        return {
+            "tickets_tab": config.USER2_TICKETS_SHEET,
+            "summary_tab": config.USER2_SUMMARY_SHEET,
+            "with_productos": False,
+            "with_budget": False,
+            "notify_phone": config.USER2_PHONE,
+        }
+    return {
+        "tickets_tab": "Tickets",
+        "summary_tab": "Resumen",
+        "with_productos": True,
+        "with_budget": True,
+        "notify_phone": config.NOTIFY_PHONE,
+    }
+
 FIELDS_MAP = {
     "total": "total",
     "comercio": "store",
@@ -185,13 +204,22 @@ async def webhook(
     if sender in pending:
         if upper in ("SI", "YES", "SÍ"):
             try:
+                user_cfg = get_user_config(sender)
                 budget_eur = get_budget_eur()
                 try:
                     eur_to_ars = await get_eur_to_ars()
                 except Exception:
                     logging.warning("Could not fetch EUR/ARS rate, using 0")
                     eur_to_ars = 0.0
-                months = append_row(pending[sender], budget_eur=budget_eur, eur_to_ars=eur_to_ars)
+                months = append_row(
+                    pending[sender],
+                    budget_eur=budget_eur,
+                    eur_to_ars=eur_to_ars,
+                    tickets_tab=user_cfg["tickets_tab"],
+                    summary_tab=user_cfg["summary_tab"],
+                    with_productos=user_cfg["with_productos"],
+                    with_budget=user_cfg["with_budget"],
+                )
                 lines = ["Listo, guardado en la planilla!\n", "*Resumen:*"]
                 for m in months:
                     stores = ", ".join(m["stores"]) or "?"
@@ -274,34 +302,8 @@ async def webhook(
     return Response(content="", media_type="text/plain")
 
 
-@app.post("/cron/monthly-summary")
-async def cron_monthly_summary(x_cron_secret: str = Header(None)):
-    if not config.CRON_SECRET or x_cron_secret != config.CRON_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    # Calculate previous month (this endpoint is called on the 1st)
-    today = datetime.now()
-    first_of_this_month = today.replace(day=1)
-    last_month = first_of_this_month - timedelta(days=1)
-    prev_year = last_month.year
-    prev_month = last_month.month
-
-    row = get_previous_month_summary(prev_year, prev_month)
-    if row is None:
-        logging.warning(f"No summary data found for {prev_year}/{prev_month}")
-        return {"ok": True, "warning": "No data for previous month"}
-
-    budget_eur = get_budget_eur()
-    try:
-        eur_to_ars = await get_eur_to_ars()
-    except Exception:
-        logging.warning("Could not fetch EUR/ARS rate for cron summary")
-        eur_to_ars = 0.0
-
+def _build_monthly_message(row: dict, month_name: str, prev_year: int, budget_eur: float, eur_to_ars: float) -> str:
     budget_ars = budget_eur * eur_to_ars if eur_to_ars else 0.0
-
-    month_name = MONTHS_ES.get(prev_month, str(prev_month))
-
     total_str = row.get("Total ($)") or "0"
     try:
         total_val = float(str(total_str).replace(",", ".").replace("$", "").strip())
@@ -312,7 +314,6 @@ async def cron_monthly_summary(x_cron_secret: str = Header(None)):
     pct = round(total_val / budget_ars * 100) if budget_ars else 0
     pct_label = f"{pct}% {'✓' if pct <= 100 else '⚠'}"
 
-    # Build category breakdown (all columns that aren't the fixed ones)
     fixed_cols = {"Año", "Mes", "Nro. Tickets", "Total ($)", "Presupuesto (EUR)",
                   "Tipo de cambio", "Presupuesto (ARS)", "% Gastado", "Estado"}
     cat_lines = []
@@ -336,14 +337,49 @@ async def cron_monthly_summary(x_cron_secret: str = Header(None)):
     ]
     if cat_lines:
         msg_lines += ["", "*Por categoría:*"] + cat_lines
+    return "\n".join(msg_lines)
 
-    message = "\n".join(msg_lines)
 
-    if config.NOTIFY_PHONE:
-        to = f"whatsapp:{config.NOTIFY_PHONE}" if not config.NOTIFY_PHONE.startswith("whatsapp:") else config.NOTIFY_PHONE
+@app.post("/cron/monthly-summary")
+async def cron_monthly_summary(x_cron_secret: str = Header(None)):
+    if not config.CRON_SECRET or x_cron_secret != config.CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Calculate previous month (this endpoint is called on the 1st)
+    today = datetime.now()
+    first_of_this_month = today.replace(day=1)
+    last_month = first_of_this_month - timedelta(days=1)
+    prev_year = last_month.year
+    prev_month = last_month.month
+    month_name = MONTHS_ES.get(prev_month, str(prev_month))
+
+    budget_eur = get_budget_eur()
+    try:
+        eur_to_ars = await get_eur_to_ars()
+    except Exception:
+        logging.warning("Could not fetch EUR/ARS rate for cron summary")
+        eur_to_ars = 0.0
+
+    # Define which users to notify and which summary tab to read
+    users = [
+        {"notify_phone": config.NOTIFY_PHONE, "summary_tab": "Resumen"},
+    ]
+    if config.USER2_PHONE:
+        users.append({"notify_phone": config.USER2_PHONE, "summary_tab": config.USER2_SUMMARY_SHEET})
+
+    sent = 0
+    for user in users:
+        notify_phone = user["notify_phone"]
+        if not notify_phone:
+            continue
+        row = get_previous_month_summary(prev_year, prev_month, summary_tab=user["summary_tab"])
+        if row is None:
+            logging.warning(f"No summary data for {user['summary_tab']} {prev_year}/{prev_month}")
+            continue
+        message = _build_monthly_message(row, month_name, prev_year, budget_eur, eur_to_ars)
+        to = f"whatsapp:{notify_phone}" if not notify_phone.startswith("whatsapp:") else notify_phone
         send_message(to=to, body=message)
         logging.info(f"Monthly summary sent to {to}")
-    else:
-        logging.warning("NOTIFY_PHONE not set, skipping WhatsApp send")
+        sent += 1
 
-    return {"ok": True}
+    return {"ok": True, "sent": sent}
