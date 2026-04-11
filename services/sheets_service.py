@@ -265,6 +265,12 @@ def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tic
     return _update_summary(spreadsheet, budget_eur=budget_eur, eur_to_ars=eur_to_ars, tickets_tab=tickets_tab, summary_tab=summary_tab, with_budget=with_budget)
 
 
+def refresh_summary(budget_eur: float = 0.0, eur_to_ars: float = 0.0, tickets_tab: str = "Tickets", summary_tab: str = "Resumen", with_budget: bool = True) -> list:
+    """Recalculate and overwrite the Summary sheet from the Tickets sheet. Returns last months data."""
+    spreadsheet = _get_spreadsheet()
+    return _update_summary(spreadsheet, budget_eur=budget_eur, eur_to_ars=eur_to_ars, tickets_tab=tickets_tab, summary_tab=summary_tab, with_budget=with_budget)
+
+
 def get_previous_month_summary(year: int, month: int, summary_tab: str = "Resumen") -> dict | None:
     """Return the summary row for a given year/month, or None if not found."""
     spreadsheet = _get_spreadsheet()

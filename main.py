@@ -74,6 +74,24 @@ def fmt_ars(value) -> str:
         return str(value)
 
 
+_CURRENT_YEAR = datetime.now().year
+
+
+def _date_warnings(date_str: str | None) -> list[str]:
+    """Return warning lines for a date string. Empty list = no issues."""
+    if not date_str or date_str == "?":
+        return ["⚠ *Fecha no detectada.* Corregí antes de guardar: corregir fecha DD/MM/YYYY"]
+    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y"):
+        try:
+            d = datetime.strptime(date_str, fmt)
+            if abs(d.year - _CURRENT_YEAR) > 1:
+                return [f"⚠ *El año {d.year} parece incorrecto.* Verificá o corregí: corregir fecha DD/MM/YYYY"]
+            return []
+        except ValueError:
+            continue
+    return [f"⚠ *No pude interpretar la fecha '{date_str}'.* Corregí: corregir fecha DD/MM/YYYY"]
+
+
 def build_summary(data: dict) -> str:
     total = data.get("total")
     total_display = fmt_ars(total) if total else "?"
@@ -94,6 +112,12 @@ def build_summary(data: dict) -> str:
 
     lines.append(f"  Categoría: {data.get('category') or '?'}")
     lines.append(f"*Total: {total_display}*")
+
+    warnings = _date_warnings(data.get("date"))
+    if warnings:
+        lines.append("")
+        lines.extend(warnings)
+
     lines.append("")
     lines.append("Guardamos? Respondé *SI* para guardar, *NO* para cancelar, o corregí un dato:")
     lines.append("  corregir total 52.10")
@@ -203,6 +227,10 @@ async def webhook(
     # --- Pending confirmation ---
     if sender in pending:
         if upper in ("SI", "YES", "SÍ"):
+            date_issues = _date_warnings(pending[sender].get("date"))
+            if date_issues:
+                send_message(to=sender, body="\n".join(date_issues) + "\n\nCorregí la fecha primero y después respondé *SI*.")
+                return Response(content="", media_type="text/plain")
             try:
                 user_cfg = get_user_config(sender)
                 budget_eur = get_budget_eur()
