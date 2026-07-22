@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 import httpx
 from groq import Groq
 from config import GROQ_API_KEY, GROQ_VISION_MODEL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
@@ -22,6 +23,19 @@ Si un producto no tiene precio visible, usá null para "price".
 Si no podés determinar algún campo raíz, usá null."""
 
 
+def _extract_json(raw: str) -> dict:
+    fenced_json = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced_json:
+        return json.loads(fenced_json.group(1))
+
+    first_brace = raw.find("{")
+    last_brace = raw.rfind("}")
+    if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+        return json.loads(raw[first_brace:last_brace + 1])
+
+    return json.loads(raw)
+
+
 def parse_receipt(image_urls: list[str]) -> dict | None:
     try:
         content = []
@@ -39,19 +53,19 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
         logger.info(f"Sending {len(image_urls)} image(s) to Groq...")
         completion = client.chat.completions.create(
             model=GROQ_VISION_MODEL,
-            messages=[{"role": "user", "content": content}],
+            messages=[
+                {"role": "system", "content": "You are a receipt extraction API. Return only valid JSON."},
+                {"role": "user", "content": content},
+            ],
             max_tokens=4096,
+            reasoning_format="hidden",
+            response_format={"type": "json_object"},
         )
 
         raw = completion.choices[0].message.content.strip()
         logger.info(f"Groq raw response: {raw}")
 
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
+        data = _extract_json(raw)
         logger.info(f"Parsed data: {data}")
 
         # Normalise items: always return a list of {name, price} dicts
