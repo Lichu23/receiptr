@@ -3,7 +3,7 @@ import json
 import logging
 import httpx
 from groq import Groq
-from config import GROQ_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+from config import GROQ_API_KEY, GROQ_VISION_MODEL, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
 
 logger = logging.getLogger(__name__)
 client = Groq(api_key=GROQ_API_KEY)
@@ -38,7 +38,7 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
 
         logger.info(f"Sending {len(image_urls)} image(s) to Groq...")
         completion = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model=GROQ_VISION_MODEL,
             messages=[{"role": "user", "content": content}],
             max_tokens=4096,
         )
