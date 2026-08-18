@@ -1,11 +1,15 @@
 import json
 import logging
+import time
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 from config import GOOGLE_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON
 
 logger = logging.getLogger(__name__)
+
+SPREADSHEET_OPEN_MAX_ATTEMPTS = 3
+SPREADSHEET_OPEN_INITIAL_DELAY_SECONDS = 0.5
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -19,6 +23,32 @@ MONTHS_ES = {
 }
 
 
+def _open_spreadsheet_with_retry(gc):
+    """Open the spreadsheet, retrying only transient metadata-read failures."""
+    delay = SPREADSHEET_OPEN_INITIAL_DELAY_SECONDS
+    for attempt in range(1, SPREADSHEET_OPEN_MAX_ATTEMPTS + 1):
+        try:
+            return gc.open_by_key(GOOGLE_SHEET_ID)
+        except gspread.exceptions.APIError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            is_transient = status_code == 429 or (
+                isinstance(status_code, int) and 500 <= status_code < 600
+            )
+            if not is_transient or attempt == SPREADSHEET_OPEN_MAX_ATTEMPTS:
+                raise
+
+            logger.warning(
+                "Google Sheets open failed with status %s; retrying in %.1fs "
+                "(attempt %s/%s)",
+                status_code,
+                delay,
+                attempt,
+                SPREADSHEET_OPEN_MAX_ATTEMPTS,
+            )
+            time.sleep(delay)
+            delay *= 2
+
+
 def _get_spreadsheet():
     raw = GOOGLE_SERVICE_ACCOUNT_JSON
     try:
@@ -29,7 +59,7 @@ def _get_spreadsheet():
 
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     gc = gspread.authorize(creds)
-    spreadsheet = gc.open_by_key(GOOGLE_SHEET_ID)
+    spreadsheet = _open_spreadsheet_with_retry(gc)
 
     # Rename the first sheet if it still has a default name
     first_sheet = spreadsheet.sheet1
