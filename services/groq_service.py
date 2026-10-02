@@ -57,7 +57,7 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
                 {"role": "system", "content": "You are a receipt extraction API. Return only valid JSON."},
                 {"role": "user", "content": content},
             ],
-            max_tokens=4096,
+            max_tokens=900,
             reasoning_format="hidden",
             response_format={"type": "json_object"},
         )
