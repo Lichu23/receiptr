@@ -16,10 +16,12 @@ Devolvé SOLO el JSON, sin texto adicional, con estas claves exactas:
   "date": "fecha de la compra en formato DD/MM/YYYY",
   "total": "monto total como número con dos decimales (ej: 47.30)",
   "category": "categoría del gasto (ej: Supermercado, Farmacia, Restaurante, Combustible, Otro)",
-  "items": [{"name": "nombre del producto", "price": 123.45}, ...]
+  "items": [{"name": "nombre del producto", "quantity": 2, "unit_price": 5.25, "price": 10.50}, ...]
 }
-El campo "items" debe ser una lista de objetos con "name" (string) y "price" (número con dos decimales).
-Si un producto no tiene precio visible, usá null para "price".
+El campo "items" debe ser una lista de objetos con "name" (string), "quantity" (número de unidades, 1 si no se indica),
+"unit_price" (precio por unidad) y "price" (importe total de la línea, o sea cantidad x precio unitario, con dos decimales).
+No incluyas la cantidad dentro de "name" (ej: la línea "2 24 HUEVOS FRESCOS 5,25 10,50" es quantity 2, name "24 HUEVOS FRESCOS", unit_price 5.25, price 10.50).
+Si un producto no tiene precio visible, usá null para "price" y "unit_price".
 Si no podés determinar algún campo raíz, usá null."""
 
 
@@ -34,6 +36,17 @@ def _extract_json(raw: str) -> dict:
         return json.loads(raw[first_brace:last_brace + 1])
 
     return json.loads(raw)
+
+
+def _to_quantity(value) -> int | float:
+    """Return a positive quantity, defaulting to 1 when missing or invalid."""
+    try:
+        qty = float(str(value).replace(",", ".").strip())
+    except (ValueError, TypeError):
+        return 1
+    if qty <= 0:
+        return 1
+    return int(qty) if qty == int(qty) else qty
 
 
 def parse_receipt(image_urls: list[str]) -> dict | None:
@@ -68,17 +81,25 @@ def parse_receipt(image_urls: list[str]) -> dict | None:
         data = _extract_json(raw)
         logger.info(f"Parsed data: {data}")
 
-        # Normalise items: always return a list of {name, price} dicts
+        # Normalise items: always return a list of {name, quantity, unit_price, price} dicts
         raw_items = data.get("items")
         if isinstance(raw_items, list):
             items = [
-                {"name": str(it.get("name") or ""), "price": it.get("price")}
+                {
+                    "name": str(it.get("name") or ""),
+                    "quantity": _to_quantity(it.get("quantity")),
+                    "unit_price": it.get("unit_price"),
+                    "price": it.get("price"),
+                }
                 for it in raw_items
                 if isinstance(it, dict)
             ]
         else:
             # Fallback: Groq returned a string — wrap as single item with no price
-            items = [{"name": str(raw_items), "price": None}] if raw_items else []
+            items = (
+                [{"name": str(raw_items), "quantity": 1, "unit_price": None, "price": None}]
+                if raw_items else []
+            )
 
         return {
             "store": data.get("store"),

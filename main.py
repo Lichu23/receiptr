@@ -108,7 +108,9 @@ def build_summary(data: dict) -> str:
             name = it.get("name") or "?"
             price = it.get("price")
             price_str = fmt_ars(price) if price is not None else "—"
-            lines.append(f"  • {name}: {price_str}")
+            qty = it.get("quantity") or 1
+            qty_str = f"{qty} × " if qty != 1 else ""
+            lines.append(f"  • {qty_str}{name}: {price_str}")
     elif items:
         lines.append(f"  Items: {items}")
 

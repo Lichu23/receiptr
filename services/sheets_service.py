@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.utils import rowcol_to_a1
 from config import GOOGLE_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON
 
 logger = logging.getLogger(__name__)
@@ -93,14 +94,44 @@ def _get_or_create_tickets_sheet(spreadsheet, name="Tickets"):
     return sheet
 
 
+PRODUCTOS_HEADER = [
+    "Logged At", "Fecha", "Comercio", "Categoría", "Producto", "Precio",
+    "Cantidad", "Precio unitario",
+]
+
+
 def _get_or_create_productos_sheet(spreadsheet, name="Productos"):
     try:
-        return spreadsheet.worksheet(name)
+        sheet = spreadsheet.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=6)
-        sheet.append_row(["Logged At", "Fecha", "Comercio", "Categoría", "Producto", "Precio"])
+        sheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=len(PRODUCTOS_HEADER))
+        sheet.append_row(PRODUCTOS_HEADER)
         logger.info(f"Created '{name}' sheet")
         return sheet
+
+    # Tabs created before quantity tracking only have the first 6 columns
+    header = sheet.row_values(1)
+    if len(header) < len(PRODUCTOS_HEADER):
+        if sheet.col_count < len(PRODUCTOS_HEADER):
+            sheet.add_cols(len(PRODUCTOS_HEADER) - sheet.col_count)
+        sheet.update([PRODUCTOS_HEADER[len(header):]], rowcol_to_a1(1, len(header) + 1))
+        logger.info(f"Added missing header columns to '{name}' sheet")
+    return sheet
+
+
+def _producto_row(logged_at, date, store, category, item) -> list:
+    price = item.get("price")
+    unit_price = item.get("unit_price")
+    return [
+        logged_at,
+        date or "",
+        store or "",
+        category or "",
+        item.get("name") or "",
+        price if price is not None else "",
+        item.get("quantity") or 1,
+        unit_price if unit_price is not None else "",
+    ]
 
 
 def get_budget_eur() -> float:
@@ -124,10 +155,7 @@ def append_productos(logged_at: str, date: str, store: str, category: str, items
         return
     spreadsheet = _get_spreadsheet()
     sheet = _get_or_create_productos_sheet(spreadsheet)
-    rows = [
-        [logged_at, date, store, category, item.get("name") or "", item.get("price") or ""]
-        for item in items
-    ]
+    rows = [_producto_row(logged_at, date, store, category, item) for item in items]
     sheet.append_rows(rows, value_input_option="USER_ENTERED")
     logger.info(f"Appended {len(rows)} producto row(s)")
 
@@ -278,14 +306,7 @@ def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tic
     if with_productos and isinstance(items, list) and items:
         productos_sheet = _get_or_create_productos_sheet(spreadsheet, name=productos_tab)
         rows = [
-            [
-                logged_at,
-                data.get("date") or "",
-                data.get("store") or "",
-                data.get("category") or "",
-                item.get("name") or "",
-                item.get("price") if item.get("price") is not None else "",
-            ]
+            _producto_row(logged_at, data.get("date"), data.get("store"), data.get("category"), item)
             for item in items
         ]
         productos_sheet.append_rows(rows, value_input_option="USER_ENTERED")
