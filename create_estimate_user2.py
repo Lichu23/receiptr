@@ -3,7 +3,7 @@ Run this script locally to create user 2's estimated expenses for next month.
 
     python create_estimate_user2.py
 
-Reads .env for credentials. Creates the 'Estimado_2' tab: the estimate is the average of
+Reads .env for credentials. Creates the 'Estimado_2' tab: the estimate for the current month is the average of
 the last 3 complete months found in the user 2 summary tab, in total and per category.
 It does not depend on the month selected in 'Charts_2', and it moves forward by itself
 each month. Safe to run again: it rewrites the same cells.
@@ -43,9 +43,9 @@ def month_name_formula(back: int) -> str:
     return f"=CHOOSE(MONTH(EDATE(TODAY(),{-back})),{names})"
 
 
-def next_month_label_formula(prefix: str) -> str:
-    """Text such as 'Gasto estimado Noviembre', following today's date."""
-    return f'="{prefix} "&{month_name_formula(-1)[1:]}'
+def target_month_label_formula(prefix: str) -> str:
+    """Text such as 'Gasto estimado Octubre': the current month, following today's date."""
+    return f'="{prefix} "&{month_name_formula(0)[1:]}'
 
 
 def year_formula(back: int) -> str:
@@ -163,8 +163,8 @@ def create_estimate(spreadsheet, summary_tab: str = USER2_SUMMARY_SHEET) -> None
     locale = spreadsheet.locale
     cells = {
         (1, 7): total_column_formula(summary_tab),  # H2
-        (0, 0): next_month_label_formula("Estimado de gastos de"),
-        (ESTIMATE_ROW - 1, 0): next_month_label_formula("Gasto estimado"),
+        (0, 0): target_month_label_formula("Estimado de gastos de"),
+        (ESTIMATE_ROW - 1, 0): target_month_label_formula("Gasto estimado"),
     }
     for back, row in enumerate(MONTH_ROWS, start=1):
         r = row - 1

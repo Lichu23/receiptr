@@ -72,15 +72,15 @@ class CreateEstimateTests(unittest.TestCase):
         self.assertIn((estimate.ESTIMATE_ROW - 1, 2), formulas)
         self.assertEqual(len(formulas), 1 + 2 + 3 * 4 + 1 + 2 * estimate.MAX_CATEGORIES)
 
-    def test_labels_show_the_next_month_name(self):
+    def test_labels_show_the_current_month_name(self):
         spreadsheet, _ = make_spreadsheet()
 
         estimate.create_estimate(spreadsheet, "Summary_2")
 
         formulas = sent_formulas(spreadsheet)
         label = formulas[(estimate.ESTIMATE_ROW - 1, 0)]
-        self.assertTrue(label.startswith('="Gasto estimado "&CHOOSE(MONTH(EDATE(TODAY(),1)),'))
-        self.assertIn("EDATE(TODAY(),1)", formulas[(0, 0)])
+        self.assertTrue(label.startswith('="Gasto estimado "&CHOOSE(MONTH(EDATE(TODAY(),0)),'))
+        self.assertIn("EDATE(TODAY(),0)", formulas[(0, 0)])
 
     def test_existing_tab_is_reused(self):
         spreadsheet, _ = make_spreadsheet()
