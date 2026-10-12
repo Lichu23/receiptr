@@ -34,7 +34,8 @@ def get_user_config(sender: str) -> dict:
         return {
             "tickets_tab": config.USER2_TICKETS_SHEET,
             "summary_tab": config.USER2_SUMMARY_SHEET,
-            "with_productos": False,
+            "with_productos": True,
+            "productos_tab": config.USER2_PRODUCTOS_SHEET,
             "with_budget": False,
             "notify_phone": config.USER2_PHONE,
         }
@@ -42,6 +43,7 @@ def get_user_config(sender: str) -> dict:
         "tickets_tab": "Tickets",
         "summary_tab": "Resumen",
         "with_productos": True,
+        "productos_tab": "Productos",
         "with_budget": True,
         "notify_phone": config.NOTIFY_PHONE,
     }
@@ -246,6 +248,7 @@ async def webhook(
                     tickets_tab=user_cfg["tickets_tab"],
                     summary_tab=user_cfg["summary_tab"],
                     with_productos=user_cfg["with_productos"],
+                    productos_tab=user_cfg["productos_tab"],
                     with_budget=user_cfg["with_budget"],
                 )
                 lines = ["Listo, guardado en la planilla!\n", "*Resumen:*"]

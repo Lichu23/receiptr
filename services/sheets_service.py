@@ -93,13 +93,13 @@ def _get_or_create_tickets_sheet(spreadsheet, name="Tickets"):
     return sheet
 
 
-def _get_or_create_productos_sheet(spreadsheet):
+def _get_or_create_productos_sheet(spreadsheet, name="Productos"):
     try:
-        return spreadsheet.worksheet("Productos")
+        return spreadsheet.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="Productos", rows=1000, cols=6)
+        sheet = spreadsheet.add_worksheet(title=name, rows=1000, cols=6)
         sheet.append_row(["Logged At", "Fecha", "Comercio", "Categoría", "Producto", "Precio"])
-        logger.info("Created 'Productos' sheet")
+        logger.info(f"Created '{name}' sheet")
         return sheet
 
 
@@ -249,7 +249,7 @@ def _update_summary(spreadsheet, budget_eur: float = 0.0, eur_to_ars: float = 0.
     return last_months
 
 
-def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tickets_tab: str = "Tickets", summary_tab: str = "Resumen", with_productos: bool = True, with_budget: bool = True) -> list:
+def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tickets_tab: str = "Tickets", summary_tab: str = "Resumen", with_productos: bool = True, with_budget: bool = True, productos_tab: str = "Productos") -> list:
     logger.info(f"Connecting to Google Sheet: {GOOGLE_SHEET_ID}")
     spreadsheet = _get_spreadsheet()
     sheet = _get_or_create_tickets_sheet(spreadsheet, name=tickets_tab)
@@ -276,8 +276,7 @@ def append_row(data: dict, budget_eur: float = 0.0, eur_to_ars: float = 0.0, tic
 
     # Append individual items to Productos sheet (only for users with productos enabled)
     if with_productos and isinstance(items, list) and items:
-        _get_or_create_productos_sheet(spreadsheet)  # ensure sheet + header exist
-        productos_sheet = spreadsheet.worksheet("Productos")
+        productos_sheet = _get_or_create_productos_sheet(spreadsheet, name=productos_tab)
         rows = [
             [
                 logged_at,
