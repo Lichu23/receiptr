@@ -4,7 +4,8 @@ Run this script locally once to create the monthly products chart for user 2.
     python create_charts_user2.py
 
 Reads .env for credentials. Creates the 'Charts_2' tab with a month dropdown (B1),
-a table of total price and quantity per product for that month (A3) and a bar chart.
+a table of total price and quantity per product for that month (A3), a bar chart and the
+total of the current calendar month (G1:H1, from the summary tab, ignoring the dropdown).
 Safe to run again: it never creates a second chart or resets the selected month.
 """
 
@@ -13,8 +14,8 @@ from datetime import datetime
 
 import gspread
 
-from config import USER2_PRODUCTOS_SHEET
-from services.sheets_service import _get_spreadsheet
+from config import USER2_PRODUCTOS_SHEET, USER2_SUMMARY_SHEET
+from services.sheets_service import MONTHS_ES, _get_spreadsheet
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -26,6 +27,27 @@ MONTHS_LIST_LAST_ROW = 100
 TABLE_FIRST_ROW = 3          # header row of the table (1-indexed)
 MAX_PRODUCTS = 40
 CHART_ANCHOR_COLUMN = 6      # column G (0-indexed)
+CURRENT_TOTAL_LABEL_CELL = (0, 6)   # G1: "Total Octubre"
+CURRENT_TOTAL_VALUE_CELL = (0, 7)   # H1: total of the current calendar month
+TOTAL_HEADER = "Total ($)"
+
+
+def _current_month_name() -> str:
+    names = ",".join(f'"{MONTHS_ES[m]}"' for m in range(1, 13))
+    return f"CHOOSE(MONTH(TODAY()),{names})"
+
+
+def current_total_label_formula() -> str:
+    return f'="Total "&{_current_month_name()}'
+
+
+def current_total_formula(summary_tab: str) -> str:
+    """Total of the current calendar month from the summary tab, ignoring the dropdown."""
+    s = f"'{summary_tab}'"
+    return (
+        f'=IFERROR(SUMIFS(INDEX({s}!$A$1:$Z$1000,0,MATCH("{TOTAL_HEADER}",{s}!$1:$1,0)),'
+        f"{s}!$A$1:$A$1000,YEAR(TODAY()),{s}!$B$1:$B$1000,{_current_month_name()}),0)"
+    )
 
 
 def months_formula(productos_tab: str) -> str:
@@ -177,7 +199,52 @@ def _warn_if_dates_are_text(productos_sheet) -> None:
         )
 
 
-def create_charts(spreadsheet, productos_tab: str = USER2_PRODUCTOS_SHEET) -> None:
+def _current_total_requests(spreadsheet, sheet_id: int, summary_tab: str, locale: str) -> list[dict]:
+    try:
+        spreadsheet.worksheet(summary_tab)
+    except gspread.exceptions.WorksheetNotFound:
+        logger.warning(f"Tab '{summary_tab}' not found, skipping the current month total")
+        return []
+    label_row, label_col = CURRENT_TOTAL_LABEL_CELL
+    value_row, value_col = CURRENT_TOTAL_VALUE_CELL
+
+    def style(row, col, cell, fields):
+        return {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row,
+                    "endRowIndex": row + 1,
+                    "startColumnIndex": col,
+                    "endColumnIndex": col + 1,
+                },
+                "cell": cell,
+                "fields": fields,
+            }
+        }
+
+    return [
+        formula_request(
+            sheet_id, label_row, label_col, localize_formula(current_total_label_formula(), locale)
+        ),
+        formula_request(
+            sheet_id, value_row, value_col,
+            localize_formula(current_total_formula(summary_tab), locale),
+        ),
+        style(label_row, label_col, {"userEnteredFormat": {"textFormat": {"bold": True}}},
+              "userEnteredFormat.textFormat"),
+        style(value_row, value_col,
+              {"userEnteredFormat": {"textFormat": {"bold": True},
+                                     "numberFormat": {"type": "NUMBER", "pattern": "#,##0.00"}}},
+              "userEnteredFormat.textFormat,userEnteredFormat.numberFormat"),
+    ]
+
+
+def create_charts(
+    spreadsheet,
+    productos_tab: str = USER2_PRODUCTOS_SHEET,
+    summary_tab: str = USER2_SUMMARY_SHEET,
+) -> None:
     try:
         productos_sheet = spreadsheet.worksheet(productos_tab)
     except gspread.exceptions.WorksheetNotFound:
@@ -212,6 +279,7 @@ def create_charts(spreadsheet, productos_tab: str = USER2_PRODUCTOS_SHEET) -> No
             localize_formula(table_formula(productos_tab), locale),
         ),
     ]
+    requests.extend(_current_total_requests(spreadsheet, charts_sheet.id, summary_tab, locale))
     if _has_chart(spreadsheet, charts_sheet.id):
         logger.info("Chart already exists, not creating another one")
     else:

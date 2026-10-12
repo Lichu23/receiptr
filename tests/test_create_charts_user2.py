@@ -9,7 +9,9 @@ os.environ.setdefault("GROQ_API_KEY", "gsk_test")
 import create_charts_user2 as charts
 
 
-def make_spreadsheet(has_chart=False, charts_exist=True, productos_exist=True, locale="en_US"):
+def make_spreadsheet(
+    has_chart=False, charts_exist=True, productos_exist=True, summary_exists=True, locale="en_US"
+):
     productos = Mock(title="Productos_2")
     productos.col_values.return_value = ["Fecha", 46000, 46001]
     charts_sheet = Mock(id=7)
@@ -22,6 +24,8 @@ def make_spreadsheet(has_chart=False, charts_exist=True, productos_exist=True, l
             return productos
         if name == charts.CHARTS_TAB and charts_exist:
             return charts_sheet
+        if name == "Summary_2" and summary_exists:
+            return Mock()
         raise gspread.exceptions.WorksheetNotFound
 
     spreadsheet.worksheet.side_effect = worksheet
@@ -85,10 +89,10 @@ class CreateChartsTests(unittest.TestCase):
         spreadsheet.add_worksheet.assert_called_once()
         self.assertEqual(
             request_names(spreadsheet),
-            ["setDataValidation", "updateCells", "updateCells", "addChart"],
+            ["setDataValidation"] + ["updateCells"] * 4 + ["repeatCell"] * 2 + ["addChart"],
         )
         requests = spreadsheet.batch_update.call_args.args[0]["requests"]
-        self.assertEqual(requests[3]["addChart"]["chart"]["spec"]["basicChart"]["chartType"], "BAR")
+        self.assertEqual(requests[-1]["addChart"]["chart"]["spec"]["basicChart"]["chartType"], "BAR")
 
     def test_second_run_does_not_add_another_chart(self):
         spreadsheet, _, _ = make_spreadsheet(has_chart=True)
@@ -96,7 +100,8 @@ class CreateChartsTests(unittest.TestCase):
         charts.create_charts(spreadsheet, "Productos_2")
 
         self.assertEqual(
-            request_names(spreadsheet), ["setDataValidation", "updateCells", "updateCells"]
+            request_names(spreadsheet),
+            ["setDataValidation"] + ["updateCells"] * 4 + ["repeatCell"] * 2,
         )
 
     def test_keeps_selected_month_when_already_set(self):
@@ -112,7 +117,7 @@ class CreateChartsTests(unittest.TestCase):
 
         charts.create_charts(spreadsheet, "Productos_2")
 
-        months, table = sent_formulas(spreadsheet)
+        months, table, _, _ = sent_formulas(spreadsheet)
         self.assertIn('"yyyy-mm");', table)
         self.assertIn("\\", table)
         self.assertNotIn(",1,FALSE", months)
@@ -122,9 +127,33 @@ class CreateChartsTests(unittest.TestCase):
 
         charts.create_charts(spreadsheet, "Productos_2")
 
-        months, table = sent_formulas(spreadsheet)
+        months, table, _, _ = sent_formulas(spreadsheet)
         self.assertEqual(months, charts.months_formula("Productos_2"))
         self.assertEqual(table, charts.table_formula("Productos_2"))
+
+    def test_current_month_total_comes_from_summary_and_ignores_dropdown(self):
+        spreadsheet, _, _ = make_spreadsheet()
+
+        charts.create_charts(spreadsheet, "Productos_2", "Summary_2")
+
+        label, total = sent_formulas(spreadsheet)[2:]
+        self.assertTrue(label.startswith('="Total "&CHOOSE(MONTH(TODAY()),'))
+        self.assertIn("'Summary_2'", total)
+        self.assertIn("YEAR(TODAY())", total)
+        self.assertIn('MATCH("Total ($)"', total)
+        self.assertNotIn("Charts_2", total)
+        self.assertNotIn("$B$1,", total)
+
+    def test_missing_summary_tab_skips_only_the_current_total(self):
+        spreadsheet, _, _ = make_spreadsheet(summary_exists=False)
+
+        with self.assertLogs(charts.logger, level="WARNING"):
+            charts.create_charts(spreadsheet, "Productos_2", "Summary_2")
+
+        self.assertEqual(
+            request_names(spreadsheet),
+            ["setDataValidation", "updateCells", "updateCells", "addChart"],
+        )
 
     def test_missing_products_tab_stops_without_changes(self):
         spreadsheet, _, _ = make_spreadsheet(productos_exist=False)
